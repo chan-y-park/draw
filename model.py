@@ -189,6 +189,12 @@ class DRAW:
             c,
             name='c'
         )
+
+        x_tilde = tf.sigmoid(
+            c,
+            name='x_tilde',
+        )
+
         h_dec = tf.identity(
             h_dec,
             name='h_dec',
@@ -210,13 +216,13 @@ class DRAW:
 
                 L_z_prev = tf.placeholder(
                     dtype=tf.float32,
-                    shape=mu.shape,
+                    shape=(),
                     name='L_z_prev'
                 )
                 sigma_2 = sigma ** 2
                 L_z = tf.add(
                     L_z_prev,
-                    (mu ** 2 + sigma_2 - tf.log(sigma_2)),
+                    tf.reduce_sum(mu ** 2 + sigma_2 - tf.log(sigma_2)),
                     name='L_z',
                 )
 
@@ -258,14 +264,187 @@ class DRAW:
                 dtype=np.float32,
             )
 
-    def train(self, num_training_iterations=1):
-        fetches = {
-            'c': self._tf_graph.get_tensor_by_name(
-                'c'
-            ),
-        }
-        feed_dict = {
-            self._tf_graph.get_tensor_by_name(
-                'x'
-            ): self._get_sample_from_data()
-        }
+    def get_samples_from_data(self, minibatch_size=1):
+        dataset_name=self._config['dataset_name']
+        
+        if dataset_name == 'MNIST':
+            samples = self._mnist_data['x_train'][
+                np.random.randint(
+                    low=0,
+                    high=self._mnist_data['x_size'],
+                    size=minibatch_size,
+                )
+            ]
+            samples = samples[:,:,:,np.newaxis]
+        elif dataset_name == 'SVHN':
+            samples = self._data[
+                np.random.randint(
+                    low=0,
+                    high=len(self._data),
+                    size=minibatch_size,
+                )
+            ]
+        else:
+            raise ValueError('Unknown dataset name: {}.'.format(dataset_name))
+
+        return samples
+
+    def train(self):
+        num_training_iterations = self._config['num_training_iterations']
+        num_encoding_steps = self._config['num_encoding_steps']
+
+        minibatch_size = self._config['minibatch_size']
+        image_size = self._config['image_size']
+        input_size = image_size ** 2
+        num_units = self._config['num_units']
+
+#        c_0 = np.zeros(
+#            shape=(minibatch_size, input_size),
+#            dtype=np.float32,
+#        )
+#        h_enc_0 = np.zeros(
+#            shape=(minibatch_size, num_units),
+#            dtype=np.float32,
+#        )
+#        c_enc_state_0 = np.zeros(
+#            shape=(minibatch_size, num_units),
+#            dtype=np.float32,
+#        )
+#        h_dec_0 = np.zeros(
+#            shape=(minibatch_size, num_units),
+#            dtype=np.float32,
+#        )
+#        c_dec_state_0 = np.zeros(
+#            shape=(minibatch_size, num_units),
+#            dtype=np.float32,
+#        )
+
+        fetches = {}
+        for var_name in [
+            'h_enc',
+            'encoder/c_state',
+            'h_dec',
+            'decoder/c_state',
+            'c',
+            'loss/L_x',
+            'loss/L_z',
+            'loss/L',
+        ]:
+            fetches[var_name] = self._tf_graph.get_tensor_by_name(
+                var_name + ':0'
+            )
+        op_name = 'train/minimize_L'
+        fetches[op_name] = self._tf_graph.get_operation_by_name(
+            op_name        
+        )
+
+        feed_dict = {}
+        feed_dict_key = {}
+        for var_name in [
+            'x',
+            'h_enc_prev',
+            'encoder/c_state_prev',
+            'h_dec_prev',
+            'decoder/c_state_prev',
+            'c_prev',
+            'loss/L_z_prev'
+        ]:
+            var = feed_dict_key[var_name] = self._tf_graph.get_tensor_by_name(
+               var_name + ':0'
+            )
+            feed_dict[var] = None
+
+        for i in range(num_training_iterations):
+            training_samples = self.get_samples_from_data(
+                minibatch_size=minibatch_size,
+            )
+            for k, v in feed_dict.items():
+                if k == 'x':
+                    feed_dict[k] = training_samples
+                else:
+                    feed_dict[k] = np.zeros(
+                        shape=k.shape.as_list(),
+                        dtype=np.float32,
+                    )
+
+            for t in range(num_encoding_steps):
+                rd = self._tf_session.run(
+                    fetches=fetches,
+                    feed_dict=feed_dict,
+                )
+
+                for var_name in [
+                    'h_enc',
+                    'encoder/c_state',
+                    'h_dec',
+                    'decoder/c_state',
+                    'c',
+                    'loss/L_z',
+                ]:
+                    var = feed_dict_key[var_name + '_prev']
+                    feed_dict[var] = rd[var_name]
+
+            if i % 100 == 0:
+                print(
+                    'L_x = {:g}, L_z = {:g}, L = {:g}'
+                    .format(rd['loss/L_x'], rd['loss/L_z'], rd['loss/L'])
+                )
+
+            rd['x'] = training_samples 
+
+        return rd
+
+    def generate_samples(self):
+        num_decoding_steps = self._config['num_decoding_steps']
+
+        fetches = {}
+        for var_name in [
+            'h_dec',
+            'decoder/c_state',
+            'c',
+            'x_tilde',
+        ]:
+            fetches[var_name] = self._tf_graph.get_tensor_by_name(
+                var_name + ':0'
+            )
+
+        feed_dict = {}
+        feed_dict_key = {}
+        for var_name in [
+            'Q/z',
+            'h_dec_prev',
+            'decoder/c_state_prev',
+            'c_prev',
+        ]:
+            var = self._tf_graph.get_tensor_by_name(
+               var_name + ':0'
+            )
+            var_shape = var.shape.as_list()
+            feed_dict_key[var_name] = var
+            if var_name  == 'Q/z':
+                feed_dict[var] = np.random.normal(
+                    size=var_shape,
+                )
+            else:
+                feed_dict[var] = np.zeros(
+                    shape=var_shape,
+                    dtype=np.float32,
+                )
+
+        rds = [None] * num_decoding_steps
+
+        for t in range(num_decoding_steps):
+            rds[t] = self._tf_session.run(
+                fetches=fetches,
+                feed_dict=feed_dict,
+            )
+
+            for var_name in [
+                'h_dec',
+                'decoder/c_state',
+                'c',
+            ]:
+                var = feed_dict_key[var_name + '_prev']
+                feed_dict[var] = rds[t][var_name]
+
+        return rds
