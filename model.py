@@ -68,24 +68,26 @@ class DRAW:
     def _load_data(self):
         dataset_name=self._config['dataset_name']
 
-        if dataset_name == 'MNIST':
-            ((x_train, y_train),
-             (x_test, y_test)) = tf.contrib.keras.datasets.mnist.load_data()
-            self._mnist_data = {
-                'x_train': x_train,
-                'y_train': y_train,
-                'x_test': x_test,
-                'y_test': y_test,
-                'x_size': len(x_train),
-                'y_size': len(y_train),
-            }
-            data = np.concatenate((x_train, x_test))
+        if dataset_name == 'mnist' or dataset_name == 'svhn':
+            mnist_data = np.load(
+                'datasets/{}.npz'
+                .format(dataset_name)
+            )
+            data = np.concatenate(
+                (mnist_data['x_train'], mnist_data['x_test'])
+            )
             self._data = np.array(
                 (data / np.iinfo(np.uint8).max),
                 dtype=np.float32,
             )
-            image_size = self._config['image_size']
+        else:
+            raise ValueError('Unknown dataset name: {}.'.format(dataset_name))
+
+        image_size = self._config['image_size']
+        if dataset_name == 'mnist':
             self._config['input_size'] = image_size ** 2
+        elif dataset_name == 'svhn':
+            self._config['input_size'] = (image_size ** 2) * 3
 
     def _build_input_queue(self):
         minibatch_size = self._config['minibatch_size']
@@ -408,30 +410,16 @@ class DRAW:
         if minibatch_size is None:
             minibatch_size = self._config['minibatch_size']
         image_size = self._config['image_size']
-        input_size = image_size ** 2
-        
-        if dataset_name == 'MNIST':
-#            samples = self._mnist_data['x_train'][
-            samples = self._data[
-                np.random.randint(
-                    low=0,
-#                    high=self._mnist_data['x_size'],
-                    high=len(self._data),
-                    size=minibatch_size,
-                )
-            ]
-            samples = samples.reshape((minibatch_size, input_size))
-        elif dataset_name == 'SVHN':
-            samples = self._data[
-                np.random.randint(
-                    low=0,
-                    high=len(self._data),
-                    size=minibatch_size,
-                )
-            ]
-        else:
-            raise ValueError('Unknown dataset name: {}.'.format(dataset_name))
+        input_size = self._config['input_size']
 
+        samples = self._data[
+            np.random.randint(
+                low=0,
+                high=len(self._data),
+                size=minibatch_size,
+            )
+        ]
+#        samples = samples.reshape((minibatch_size, input_size))
         return samples
 
     def _enqueue_thread(self):
@@ -504,10 +492,10 @@ class DRAW:
         display_iterations = num_training_iterations // 100
         save_iterations = num_training_iterations // 10
 
-        minibatch_size = self._config['minibatch_size']
-        image_size = self._config['image_size']
-        input_size = image_size ** 2
-        num_units = self._config['num_units']
+#        minibatch_size = self._config['minibatch_size']
+#        image_size = self._config['image_size']
+#        input_size = image_size ** 2
+#        num_units = self._config['num_units']
 
         queue_threads = [threading.Thread(target=self._enqueue_thread)]
         for t in queue_threads:
