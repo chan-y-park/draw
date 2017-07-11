@@ -1,7 +1,7 @@
 mnist_without_attention = {
     'dataset_name': 'MNIST',
-#    'minibatch_size': 100,
-    'minibatch_size': 3,
+    'minibatch_size': 200,
+#    'minibatch_size': 3,
     'image_size': 28,
     'num_units': 256,
     'num_zs': 100,
@@ -12,7 +12,7 @@ mnist_without_attention = {
         'beta1': 0.9,
     },
     'variable_initializer': {'mean': 0, 'stddev': 0.02},
-    'num_training_iterations': 10000,
-#    'num_training_iterations': 100,
+#    'num_training_iterations': 100000,
+    'num_training_iterations': 1000,
     'num_time_steps': 10,
 }
