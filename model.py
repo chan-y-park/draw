@@ -13,7 +13,7 @@ class DRAW:
     def __init__(
         self,
         config,
-        training=None,
+#        training=None,
         gpu_memory_fraction=None,
         gpu_memory_allow_growth=True,
     ):
@@ -26,10 +26,10 @@ class DRAW:
 
         self._config = config
 
-        if training is None:
-            raise ValueError('Set training either to be True or False.')
-        else:
-            self._training = training
+#        if training is None:
+#            raise ValueError('Set training either to be True or False.')
+#        else:
+#            self._training = training
 
         self._load_data()
 
@@ -42,7 +42,9 @@ class DRAW:
 
         self._tf_graph = tf.Graph()
         with self._tf_graph.as_default():
-            self._build_network(training=training)
+            self._build_network(
+#                training=training,
+            )
 
             self._tf_session = tf.Session(config=self._tf_config)
             self._tf_session.run(tf.global_variables_initializer())
@@ -50,130 +52,80 @@ class DRAW:
     def _build_network(
         self,
         with_attention=False,
-        training=True,
+#        training=True,
     ):
+        num_time_steps  = self._config['num_time_steps']
+
         minibatch_size = self._config['minibatch_size']
         image_size = self._config['image_size']
         input_size = image_size ** 2
         num_units = self._config['num_units']
         num_zs = self._config['num_zs']
         
-        c_prev = tf.placeholder(
+        cs = tf.get_variable(
+            name='cs',
+            shape=((num_time_steps + 1), minibatch_size, input_size),
+            initializer=tf.zeros_initializer(dtype=tf.float32)
+        )
+
+        x = tf.placeholder(
             dtype=tf.float32,
             shape=(minibatch_size, input_size),
-            name='c_prev',
-        )
-        h_dec_prev = tf.placeholder(
-            dtype=tf.float32,
-            shape=(minibatch_size, num_units),
-            name='h_dec_prev',
+            name='x',
         )
 
-        if training:
-            x = tf.placeholder(
-                dtype=tf.float32,
-                shape=(minibatch_size, input_size),
-                name='x',
-            )
-            h_enc_prev = tf.placeholder(
-                dtype=tf.float32,
-                shape=(minibatch_size, num_units),
-                name='h_enc_prev',
-            )
-
-            with tf.variable_scope('read'):
-                x_hat = x - tf.sigmoid(c_prev)
-                if not with_attention:
-                    r = tf.concat(
-                        (x, x_hat),
-                        axis=1,
-                        name='r',
-                    )
-                else:
-                    pass
-
-            with tf.variable_scope('encoder'):
-                enc_lstm_cell = tf.nn.rnn_cell.LSTMCell(
-                    num_units=num_units,
-                    use_peepholes=True,
-                    forget_bias=1.0,
-                )
-                enc_inputs = tf.concat(
-                    (x, x_hat, h_dec_prev),
-                    axis=1,
-                    name='inputs',
-                )
-                enc_c_state_prev = tf.placeholder(
-                    dtype=tf.float32,
-                    shape=(minibatch_size, num_units),
-                    name='c_state_prev',
-                )
-                h_enc, enc_state = enc_lstm_cell(
-                    enc_inputs,
-                    (enc_c_state_prev, h_enc_prev),
-                )
-                enc_c_state = tf.identity(
-                    enc_state.c,
-                    name='c_state',
-                )
-
-            with tf.variable_scope('Q'):
-                W_mu = tf.get_variable(
-                    name='W_mu',
-                    shape=(num_units, num_zs),
-                    initializer=self._get_variable_initializer(),
-                )
-                mu = tf.matmul(
-                    h_enc, W_mu,
-                    name='mu',
-                )
-
-                W_sigma = tf.get_variable(
-                    name='W_sigma',
-                    shape=(num_units, num_zs),
-                    initializer=self._get_variable_initializer(),
-                )
-                sigma = tf.exp(
-                    tf.matmul(h_enc, W_sigma),
-                    name='sigma',
-                )
-
-                N = tf.random_normal(
-                    shape=(minibatch_size, num_zs),
-                    dtype=tf.float32,
-                )
-
-                z = tf.add(
-                    mu,
-                    tf.multiply(sigma, N),
-                    name='z',
-                )
-        else:
-            z = tf.random_normal(
-                shape=(minibatch_size, num_zs),
-                name='z',
-            )
-            
-        with tf.variable_scope('decoder'):
-            dec_lstm_cell = tf.nn.rnn_cell.LSTMCell(
+        with tf.variable_scope('encoder'):
+            encoder = tf.nn.rnn_cell.LSTMCell(
                 num_units=num_units,
                 use_peepholes=True,
                 forget_bias=1.0,
             )
-            dec_c_state_prev = tf.placeholder(
+
+            enc_state = encoder.zero_state(
+                batch_size=minibatch_size,
                 dtype=tf.float32,
-                shape=(minibatch_size, num_units),
-                name='c_state_prev',
             )
-            h_dec, dec_state = dec_lstm_cell(
-                z,
-                (dec_c_state_prev, h_dec_prev),
+
+        with tf.variable_scope('decoder'):
+            decoder = tf.nn.rnn_cell.LSTMCell(
+                num_units=num_units,
+                use_peepholes=True,
+                forget_bias=1.0,
             )
-            dec_c_state = tf.identity(
-                dec_state.c,
-                name='c_state',
+
+            dec_state = decoder.zero_state(
+                batch_size=minibatch_size,
+                dtype=tf.float32,
             )
-            
+
+        with tf.variable_scope('Q'):
+            W_mu = tf.get_variable(
+                name='W_mu',
+                shape=(num_units, num_zs),
+                initializer=self._get_variable_initializer(),
+            )
+            W_sigma = tf.get_variable(
+                name='W_sigma',
+                shape=(num_units, num_zs),
+                initializer=self._get_variable_initializer(),
+            )
+            mu_squared_sum = tf.zeros(
+                shape=(),
+                dtype=tf.float32,
+            )
+            sigma_squared_sum = tf.zeros(
+                shape=(),
+                dtype=tf.float32,
+            )
+            log_sigma_squared_sum = tf.zeros(
+                shape=(),
+                dtype=tf.float32,
+            )
+            N = tf.random_normal(
+                shape=(minibatch_size, num_zs),
+                dtype=tf.float32,
+            )
+
         with tf.variable_scope('write'):
             if not with_attention: 
                 W = tf.get_variable(
@@ -181,63 +133,113 @@ class DRAW:
                     shape=(num_units, input_size),
                     initializer=self._get_variable_initializer(),
                 )
-                c = c_prev + tf.matmul(h_dec, W)
             else:
                 pass
 
-        c = tf.identity(
-            c,
-            name='c'
-        )
+        for t in range(num_time_steps):
+            x_hat = x - tf.sigmoid(cs[t])
+            if not with_attention:
+                r = tf.concat(
+                    (x, x_hat),
+                    axis=1,
+                )
+            else:
+                pass
 
+            enc_inputs = tf.concat(
+                (r, dec_state.h),
+                axis=1,
+            )
+
+            with tf.variable_scope('encoder') as scope:
+                if t > 0:
+                    scope.reuse_variables()
+                enc_output, enc_state = encoder(
+                    enc_inputs,
+                    enc_state,
+                )
+
+            with tf.variable_scope('Q', reuse=True):
+                W_mu = tf.get_variable('W_mu')
+                mu = tf.matmul(enc_state.h, W_mu)
+                mu_squared_sum += tf.reduce_sum(mu ** 2)
+
+                W_sigma = tf.get_variable('W_sigma')
+                sigma = tf.exp(tf.matmul(enc_state.h, W_sigma))
+                sigma_squared = sigma ** 2
+                sigma_squared_sum += tf.reduce_sum(sigma_squared)
+                log_sigma_squared_sum += tf.reduce_sum(
+                    tf.log(sigma_squared)
+                )
+
+            z = tf.add(
+                mu,
+                tf.multiply(sigma, N),
+                name='z',
+            )
+                
+            with tf.variable_scope('decoder') as scope:
+                if t > 0:
+                    scope.reuse_variables()
+                dec_output, dec_state = decoder(
+                    z,
+                    dec_state,
+                )
+                
+            with tf.variable_scope('write', reuse=True):
+                if not with_attention: 
+                    W = tf.get_variable('W')
+                    tf.assign(
+                        cs[t + 1],
+                        cs[t] + tf.matmul(dec_state.h, W),
+                    )
+                else:
+                    pass
+
+        # End of RNN rollout.
+
+        # XXX
+        xs_tilde = tf.sigmoid(
+            cs,
+            name='xs_tilde',
+        )
         x_tilde = tf.sigmoid(
-            c,
+            cs[num_time_steps],
             name='x_tilde',
         )
 
-        h_dec = tf.identity(
-            h_dec,
-            name='h_dec',
-        )
-
-        if training:
-            h_enc = tf.identity(
-                h_enc,
-                name='h_enc',
+        with tf.variable_scope('loss'):
+            L_x = tf.reduce_sum(
+                tf.nn.sigmoid_cross_entropy_with_logits(
+                    labels=x,
+                    logits=cs[num_time_steps],
+                ),
+                name='L_x',
             )
-            with tf.variable_scope('loss'):
-                L_x = tf.reduce_sum(
-                    tf.nn.sigmoid_cross_entropy_with_logits(
-                        labels=x,
-                        logits=c,
-                    ),
-                    name='L_x',
-                )
 
-                L_z_prev = tf.placeholder(
-                    dtype=tf.float32,
-                    shape=(),
-                    name='L_z_prev'
-                )
-                sigma_2 = sigma ** 2
-                L_z = tf.add(
-                    L_z_prev,
-                    tf.reduce_sum(mu ** 2 + sigma_2 - tf.log(sigma_2)),
-                    name='L_z',
-                )
+            L_z = tf.identity(
+                (mu_squared_sum + sigma_squared_sum - log_sigma_squared_sum),
+                name='L_z',
+            )
 
-                L = tf.add(
-                    L_x, L_z,
-                    name='L'
-                )
+            L = tf.add(
+                L_x, L_z,
+                name='L'
+            )
 
-            with tf.variable_scope('train'):
-                adam = tf.train.AdamOptimizer(**self._config['adam'])
+        with tf.variable_scope('train'):
+            adam = tf.train.AdamOptimizer(**self._config['adam'])
 
-                train_op = adam.minimize(
-                    loss=L,
-                    name='minimize_L',
-                )
+            train_op = adam.minimize(
+                loss=L,
+                name='minimize_L',
+            )
+
+            train_op = tf.group(
+                adam.minimize(loss=L_x),
+                adam.minimize(loss=L_z),
+                name='minimize_losses',
+            )
 
     def _get_variable_initializer(self):
         return tf.truncated_normal_initializer(
@@ -264,8 +266,12 @@ class DRAW:
                 dtype=np.float32,
             )
 
-    def get_samples_from_data(self, minibatch_size=1):
+    def get_samples_from_data(self, minibatch_size=None):
         dataset_name=self._config['dataset_name']
+        if minibatch_size is None:
+            minibatch_size = self._config['minibatch_size']
+        image_size = self._config['image_size']
+        input_size = image_size ** 2
         
         if dataset_name == 'MNIST':
             samples = self._mnist_data['x_train'][
@@ -275,7 +281,7 @@ class DRAW:
                     size=minibatch_size,
                 )
             ]
-            samples = samples[:,:,:,np.newaxis]
+            samples = samples.reshape((minibatch_size, input_size))
         elif dataset_name == 'SVHN':
             samples = self._data[
                 np.random.randint(
@@ -291,41 +297,18 @@ class DRAW:
 
     def train(self):
         num_training_iterations = self._config['num_training_iterations']
-        num_encoding_steps = self._config['num_encoding_steps']
+        display_iterations = num_training_iterations // 100
 
         minibatch_size = self._config['minibatch_size']
         image_size = self._config['image_size']
         input_size = image_size ** 2
         num_units = self._config['num_units']
 
-#        c_0 = np.zeros(
-#            shape=(minibatch_size, input_size),
-#            dtype=np.float32,
-#        )
-#        h_enc_0 = np.zeros(
-#            shape=(minibatch_size, num_units),
-#            dtype=np.float32,
-#        )
-#        c_enc_state_0 = np.zeros(
-#            shape=(minibatch_size, num_units),
-#            dtype=np.float32,
-#        )
-#        h_dec_0 = np.zeros(
-#            shape=(minibatch_size, num_units),
-#            dtype=np.float32,
-#        )
-#        c_dec_state_0 = np.zeros(
-#            shape=(minibatch_size, num_units),
-#            dtype=np.float32,
-#        )
-
         fetches = {}
         for var_name in [
-            'h_enc',
-            'encoder/c_state',
-            'h_dec',
-            'decoder/c_state',
-            'c',
+            'cs',
+            'xs_tilde',
+            'x_tilde',
             'loss/L_x',
             'loss/L_z',
             'loss/L',
@@ -333,118 +316,53 @@ class DRAW:
             fetches[var_name] = self._tf_graph.get_tensor_by_name(
                 var_name + ':0'
             )
-        op_name = 'train/minimize_L'
-        fetches[op_name] = self._tf_graph.get_operation_by_name(
-            op_name        
-        )
 
-        feed_dict = {}
-        feed_dict_key = {}
-        for var_name in [
-            'x',
-            'h_enc_prev',
-            'encoder/c_state_prev',
-            'h_dec_prev',
-            'decoder/c_state_prev',
-            'c_prev',
-            'loss/L_z_prev'
-        ]:
-            var = feed_dict_key[var_name] = self._tf_graph.get_tensor_by_name(
-               var_name + ':0'
-            )
-            feed_dict[var] = None
+        op_name = 'train/minimize_L'
+#        op_name = 'train/minimize_losses'
+        fetches['train_op'] = self._tf_graph.get_operation_by_name(op_name)
+
+        x = self._tf_graph.get_tensor_by_name('x:0')
 
         for i in range(num_training_iterations):
             training_samples = self.get_samples_from_data(
                 minibatch_size=minibatch_size,
             )
-            for k, v in feed_dict.items():
-                if k == 'x':
-                    feed_dict[k] = training_samples
-                else:
-                    feed_dict[k] = np.zeros(
-                        shape=k.shape.as_list(),
-                        dtype=np.float32,
-                    )
+            feed_dict = {x: training_samples}
 
-            for t in range(num_encoding_steps):
-                rd = self._tf_session.run(
-                    fetches=fetches,
-                    feed_dict=feed_dict,
-                )
+            rd = self._tf_session.run(
+                fetches=fetches,
+                feed_dict=feed_dict,
+            )
+            rd['x'] = training_samples 
 
-                for var_name in [
-                    'h_enc',
-                    'encoder/c_state',
-                    'h_dec',
-                    'decoder/c_state',
-                    'c',
-                    'loss/L_z',
-                ]:
-                    var = feed_dict_key[var_name + '_prev']
-                    feed_dict[var] = rd[var_name]
-
-            if i % 100 == 0:
+            if i % display_iterations == 0:
                 print(
                     'L_x = {:g}, L_z = {:g}, L = {:g}'
                     .format(rd['loss/L_x'], rd['loss/L_z'], rd['loss/L'])
                 )
 
-            rd['x'] = training_samples 
-
         return rd
 
     def generate_samples(self):
-        num_decoding_steps = self._config['num_decoding_steps']
 
         fetches = {}
         for var_name in [
-            'h_dec',
-            'decoder/c_state',
-            'c',
+            'cs',
+            'xs_tilde',
             'x_tilde',
         ]:
             fetches[var_name] = self._tf_graph.get_tensor_by_name(
                 var_name + ':0'
             )
 
-        feed_dict = {}
-        feed_dict_key = {}
-        for var_name in [
-            'Q/z',
-            'h_dec_prev',
-            'decoder/c_state_prev',
-            'c_prev',
-        ]:
-            var = self._tf_graph.get_tensor_by_name(
-               var_name + ':0'
-            )
-            var_shape = var.shape.as_list()
-            feed_dict_key[var_name] = var
-            if var_name  == 'Q/z':
-                feed_dict[var] = np.random.normal(
-                    size=var_shape,
-                )
-            else:
-                feed_dict[var] = np.zeros(
-                    shape=var_shape,
-                    dtype=np.float32,
-                )
+        z = self._tf_graph.get_tensor_by_name('z:0')
+        feed_dict = {
+            z: np.random.normal(z.shape.as_list()),
+        }
 
-        rds = [None] * num_decoding_steps
+        rd = self._tf_session.run(
+            fetches=fetches,
+            feed_dict=feed_dict,
+        )
 
-        for t in range(num_decoding_steps):
-            rds[t] = self._tf_session.run(
-                fetches=fetches,
-                feed_dict=feed_dict,
-            )
-
-            for var_name in [
-                'h_dec',
-                'decoder/c_state',
-                'c',
-            ]:
-                var = feed_dict_key[var_name + '_prev']
-                feed_dict[var] = rds[t][var_name]
-
-        return rds
+        return rd
