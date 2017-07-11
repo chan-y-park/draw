@@ -51,6 +51,10 @@ class DRAW:
 
             self._build_network()
 
+            if self._training:
+                with tf.variable_scope('summary'):
+                    self._build_summary_ops()
+
             self._tf_session = tf.Session(config=self._tf_config)
             self._tf_session.run(tf.global_variables_initializer())
 
@@ -124,6 +128,7 @@ class DRAW:
     def _build_network(
         self,
         with_attention=False,
+        use_lstm_block_cell=True,
     ):
         training = self._training
         num_time_steps  = self._config['num_time_steps']
@@ -139,12 +144,19 @@ class DRAW:
             initializer=tf.zeros_initializer(dtype=tf.float32)
         )
 
+        lstm_kwargs = {
+            'num_units': num_units,
+            'forget_bias': 1.0,
+        }
+        if use_lstm_block_cell:
+            tf_lstm_cell = tf.contrib.rnn.LSTMBlockCell
+            lstm_kwargs['use_peephole'] = True
+        else:
+            tf_lstm_cell = tf.nn.rnn_cell.LSTMCell
+            lstm_kwargs['use_peepholes'] = True
+
+
         if training:
-#            x = tf.placeholder(
-#                dtype=tf.float32,
-#                shape=(minibatch_size, input_size),
-#                name='x',
-#            )
             x = tf.identity(
                 self._tf_graph.get_tensor_by_name(
                     'input_queue/dequeued_tensors:0'
@@ -152,11 +164,7 @@ class DRAW:
                 name='x',
             )
             with tf.variable_scope('encoder'):
-                encoder = tf.nn.rnn_cell.LSTMCell(
-                    num_units=num_units,
-                    use_peepholes=True,
-                    forget_bias=1.0,
-                )
+                encoder = tf_lstm_cell(**lstm_kwargs)
 
                 enc_state = encoder.zero_state(
                     batch_size=minibatch_size,
@@ -204,11 +212,7 @@ class DRAW:
             cs = [None] * num_time_steps
 
         with tf.variable_scope('decoder'):
-            decoder = tf.nn.rnn_cell.LSTMCell(
-                num_units=num_units,
-                use_peepholes=True,
-                forget_bias=1.0,
-            )
+            decoder = tf_lstm_cell(**lstm_kwargs)
 
             dec_state = decoder.zero_state(
                 batch_size=minibatch_size,
@@ -356,6 +360,49 @@ class DRAW:
             **self._config['variable_initializer']
         )
 
+    def _build_summary_ops(self):
+        minibatch_size = self._config['minibatch_size']
+        image_size = self._config['image_size']
+
+        summaries = []
+        with tf.variable_scope('loss'):
+            for name in ['L_x', 'L_z', 'L']:
+                summaries.append(
+                    tf.summary.scalar(
+                        name=name,
+                        tensor=self._tf_graph.get_tensor_by_name(
+                            'loss/{}:0'.format(name)
+                        ),
+                    )
+                )
+
+        with tf.variable_scope('image'):
+            x = tf.reshape(
+                self._tf_graph.get_tensor_by_name('x:0'),
+                shape=(minibatch_size, image_size, image_size, -1)
+            )
+            summaries.append(
+                tf.summary.image(
+                    name='input_images',
+                    tensor=x,
+                )
+            )
+            x_tilde = tf.reshape(
+                self._tf_graph.get_tensor_by_name('x_tilde:0'),
+                shape=(minibatch_size, image_size, image_size, -1)
+            )
+            summaries.append(
+                tf.summary.image(
+                    name='generated_images',
+                    tensor=x_tilde,
+                )
+            )
+
+        summary_op = tf.summary.merge(
+            summaries,
+            name='merged',
+        )
+
     def get_samples_from_data(self, minibatch_size=None):
         dataset_name=self._config['dataset_name']
         if minibatch_size is None:
@@ -473,14 +520,17 @@ class DRAW:
             'loss/L_x',
             'loss/L_z',
             'loss/L',
+            'summary/merged/merged',
         ]:
             fetches[var_name] = self._tf_graph.get_tensor_by_name(
                 var_name + ':0'
             )
 
-#        op_name = 'train/minimize_L'
-        op_name = 'train/minimize_losses'
-        fetches['train_op'] = self._tf_graph.get_operation_by_name(op_name)
+        for op_name in [
+#            'train/minimize_L'
+            'train/minimize_losses',
+        ]:
+            fetches[op_name] = self._tf_graph.get_operation_by_name(op_name)
 
         try:
             for i in range(self._iter, num_training_iterations + 1):
@@ -489,6 +539,11 @@ class DRAW:
 
                 rd = self._tf_session.run(
                     fetches=fetches,
+                )
+
+                summary_writer.add_summary(
+                    summary=rd['summary/merged/merged'],
+                    global_step=i,
                 )
 
                 if i % display_iterations == 0:
@@ -527,6 +582,8 @@ class DRAW:
 
         with open('{}/{}'.format(CFG_DIR, run_name), 'w') as fp:
             json.dump(self._config, fp)
+
+        summary_writer.close()
 
         return rd
 
