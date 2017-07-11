@@ -12,7 +12,7 @@ mnist_without_attention = {
         'beta1': 0.9,
     },
     'variable_initializer': {'mean': 0, 'stddev': 0.02},
-#    'num_training_iterations': 1000,
-    'num_training_iterations': 100,
+    'num_training_iterations': 10000,
+#    'num_training_iterations': 100,
     'num_time_steps': 10,
 }

@@ -62,11 +62,13 @@ class DRAW:
         num_units = self._config['num_units']
         num_zs = self._config['num_zs']
         
-        cs = tf.get_variable(
-            name='cs',
-            shape=((num_time_steps + 1), minibatch_size, input_size),
+        c = tf.get_variable(
+            name='c',
+            shape=(minibatch_size, input_size),
             initializer=tf.zeros_initializer(dtype=tf.float32)
         )
+
+        cs = [None] * num_time_steps
 
         x = tf.placeholder(
             dtype=tf.float32,
@@ -104,9 +106,19 @@ class DRAW:
                 shape=(num_units, num_zs),
                 initializer=self._get_variable_initializer(),
             )
+            b_mu = tf.get_variable(
+                name='b_mu',
+                shape=(minibatch_size, num_zs),
+                initializer=self._get_variable_initializer(),
+            )
             W_sigma = tf.get_variable(
                 name='W_sigma',
                 shape=(num_units, num_zs),
+                initializer=self._get_variable_initializer(),
+            )
+            b_sigma = tf.get_variable(
+                name='b_sigma',
+                shape=(minibatch_size, num_zs),
                 initializer=self._get_variable_initializer(),
             )
             mu_squared_sum = tf.zeros(
@@ -133,11 +145,16 @@ class DRAW:
                     shape=(num_units, input_size),
                     initializer=self._get_variable_initializer(),
                 )
+                b = tf.get_variable(
+                    name='b',
+                    shape=(minibatch_size, input_size),
+                    initializer=self._get_variable_initializer(),
+                )
             else:
                 pass
 
         for t in range(num_time_steps):
-            x_hat = x - tf.sigmoid(cs[t])
+            x_hat = x - tf.sigmoid(c)
             if not with_attention:
                 r = tf.concat(
                     (x, x_hat),
@@ -161,16 +178,23 @@ class DRAW:
 
             with tf.variable_scope('Q', reuse=True):
                 W_mu = tf.get_variable('W_mu')
-                mu = tf.matmul(enc_state.h, W_mu)
+                b_mu = tf.get_variable('b_mu')
+                mu = tf.matmul(enc_state.h, W_mu) + b_mu
                 mu_squared_sum += tf.reduce_sum(mu ** 2)
+#                mu_squared_sum += tf.reduce_mean(mu ** 2)
 
                 W_sigma = tf.get_variable('W_sigma')
-                sigma = tf.exp(tf.matmul(enc_state.h, W_sigma))
+                b_sigma = tf.get_variable('b_sigma')
+                sigma = tf.exp(tf.matmul(enc_state.h, W_sigma) + b_sigma)
                 sigma_squared = sigma ** 2
                 sigma_squared_sum += tf.reduce_sum(sigma_squared)
+#                sigma_squared_sum += tf.reduce_mean(sigma_squared)
                 log_sigma_squared_sum += tf.reduce_sum(
                     tf.log(sigma_squared)
                 )
+#                log_sigma_squared_sum += tf.reduce_mean(
+#                    tf.log(sigma_squared)
+#                )
 
             z = tf.add(
                 mu,
@@ -189,30 +213,34 @@ class DRAW:
             with tf.variable_scope('write', reuse=True):
                 if not with_attention: 
                     W = tf.get_variable('W')
-                    tf.assign(
-                        cs[t + 1],
-                        cs[t] + tf.matmul(dec_state.h, W),
-                    )
+                    b = tf.get_variable('b')
+                    c += tf.matmul(dec_state.h, W) + b
+                    cs[t] = c
                 else:
                     pass
 
         # End of RNN rollout.
 
         # XXX
+        cs = tf.stack(
+            cs,
+            name='cs',
+        )
         xs_tilde = tf.sigmoid(
             cs,
             name='xs_tilde',
         )
         x_tilde = tf.sigmoid(
-            cs[num_time_steps],
+            c,
             name='x_tilde',
         )
 
         with tf.variable_scope('loss'):
             L_x = tf.reduce_sum(
+#            L_x = tf.reduce_mean(
                 tf.nn.sigmoid_cross_entropy_with_logits(
                     labels=x,
-                    logits=cs[num_time_steps],
+                    logits=c,
                 ),
                 name='L_x',
             )
@@ -274,10 +302,12 @@ class DRAW:
         input_size = image_size ** 2
         
         if dataset_name == 'MNIST':
-            samples = self._mnist_data['x_train'][
+#            samples = self._mnist_data['x_train'][
+            samples = self._data[
                 np.random.randint(
                     low=0,
-                    high=self._mnist_data['x_size'],
+#                    high=self._mnist_data['x_size'],
+                    high=len(self._data),
                     size=minibatch_size,
                 )
             ]
@@ -317,8 +347,8 @@ class DRAW:
                 var_name + ':0'
             )
 
-        op_name = 'train/minimize_L'
-#        op_name = 'train/minimize_losses'
+#        op_name = 'train/minimize_L'
+        op_name = 'train/minimize_losses'
         fetches['train_op'] = self._tf_graph.get_operation_by_name(op_name)
 
         x = self._tf_graph.get_tensor_by_name('x:0')
@@ -357,7 +387,7 @@ class DRAW:
 
         z = self._tf_graph.get_tensor_by_name('z:0')
         feed_dict = {
-            z: np.random.normal(z.shape.as_list()),
+            z: np.random.normal(size=z.shape.as_list()),
         }
 
         rd = self._tf_session.run(
